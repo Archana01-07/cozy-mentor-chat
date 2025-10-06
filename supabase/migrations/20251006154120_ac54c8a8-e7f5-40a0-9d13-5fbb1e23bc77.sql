@@ -17,9 +17,13 @@ CREATE TABLE profiles (
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
 -- Profiles policies
+DROP POLICY IF EXISTS "Users can view own profile" ON profiles;
+
+-- Create new policies that allow viewing opposite roles
 CREATE POLICY "Users can view own profile"
   ON profiles FOR SELECT
   USING (auth.uid() = id);
+
 
 CREATE POLICY "Users can update own profile"
   ON profiles FOR UPDATE
@@ -56,6 +60,14 @@ CREATE POLICY "Students can insert own preferences"
   ON student_preferences FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+  CREATE POLICY "Students can view mentors"
+  ON profiles FOR SELECT
+  USING (
+    (SELECT role FROM profiles WHERE id = auth.uid()) = 'student' 
+    AND role = 'mentor'
+  );
+
+
 -- Create anonymous mappings table (tracks which anonymous number each student gets per mentor)
 CREATE TABLE anonymous_mappings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -73,6 +85,14 @@ ALTER TABLE anonymous_mappings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Mentors can view anonymous mappings"
   ON anonymous_mappings FOR SELECT
   USING (auth.uid() = mentor_id);
+
+  CREATE POLICY "Mentors can view students"
+  ON profiles FOR SELECT
+  USING (
+    (SELECT role FROM profiles WHERE id = auth.uid()) = 'mentor' 
+    AND role = 'student'
+  );
+
 
 CREATE POLICY "System can insert anonymous mappings"
   ON anonymous_mappings FOR INSERT
@@ -103,6 +123,45 @@ CREATE POLICY "Students can insert messages"
 
 -- Enable realtime for chat messages
 ALTER PUBLICATION supabase_realtime ADD TABLE chat_messages;
+-- Create mentor preferences table (similar to student preferences)
+CREATE TABLE mentor_preferences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  nickname TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id)
+);
+
+-- Enable RLS on mentor_preferences
+ALTER TABLE mentor_preferences ENABLE ROW LEVEL SECURITY;
+
+-- Mentor preferences policies
+CREATE POLICY "Mentors can view own preferences"
+  ON mentor_preferences FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Mentors can update own preferences"
+  ON mentor_preferences FOR UPDATE
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Mentors can insert own preferences"
+  ON mentor_preferences FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+-- Add trigger for mentor_preferences updated_at
+CREATE TRIGGER update_mentor_preferences_updated_at
+  BEFORE UPDATE ON mentor_preferences
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+-- Update chat_messages to store mentor display name too
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS mentor_display_name TEXT DEFAULT 'Mentor';
+
+-- Update existing messages to have default mentor name
+UPDATE chat_messages SET mentor_display_name = 'Mentor' WHERE mentor_display_name IS NULL;
+
+
 
 -- Create function to auto-increment anonymous numbers
 CREATE OR REPLACE FUNCTION get_or_create_anonymous_number(
