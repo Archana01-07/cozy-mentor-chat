@@ -14,35 +14,51 @@ interface Message {
   is_anonymous: boolean;
 }
 
+interface ChatRoom {
+  id: string;
+  student_id: string;
+}
+
 export const ChatInterface = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
-  const [currentRoom, setCurrentRoom] = useState<string | null>(null);
+  const [currentRoom, setCurrentRoom] = useState<ChatRoom | null>(null);
   const [loading, setLoading] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Get current user ID and load active chat room
     const initializeChat = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         setCurrentUserId(user.id);
-        await loadActiveChatRoom(user.id);
+        await loadActiveChatRooms(user.id);
       }
     };
 
     initializeChat();
+
+    // Listen for chat room selection from StudentList
+    const handleChatRoomSelected = (event: CustomEvent) => {
+      const roomId = event.detail;
+      loadRoomById(roomId);
+    };
+
+    window.addEventListener('chatRoomSelected', handleChatRoomSelected as EventListener);
+    
+    return () => {
+      window.removeEventListener('chatRoomSelected', handleChatRoomSelected as EventListener);
+    };
   }, []);
 
   useEffect(() => {
-    if (currentRoom) {
+    if (currentRoom?.id) {
       const unsubscribe = subscribeToMessages();
       return () => {
         if (unsubscribe) unsubscribe();
       };
     }
-  }, [currentRoom]);
+  }, [currentRoom?.id]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -52,27 +68,42 @@ export const ChatInterface = () => {
     scrollToBottom();
   }, [messages]);
 
-  const loadActiveChatRoom = async (userId: string) => {
+  const loadActiveChatRooms = async (userId: string) => {
     try {
-      const { data: room, error } = await supabase
+      const { data: rooms, error } = await supabase
         .from("chat_rooms")
-        .select("id, student_id, created_at")
+        .select("id, student_id")
         .eq("mentor_id", userId)
-        .eq("status", "active")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
+        .order("created_at", { ascending: false });
 
       if (error) {
-        console.log("No active chat room found:", error.message);
+        console.log("No chat rooms found:", error.message);
         return;
       }
 
-      setCurrentRoom(room.id);
-      await loadMessages(room.id);
+      if (rooms && rooms.length > 0) {
+        setCurrentRoom(rooms[0]);
+        await loadMessages(rooms[0].id);
+      }
     } catch (error) {
-      console.error("Error loading chat room:", error);
+      console.error("Error loading chat rooms:", error);
     }
+  };
+
+  const loadRoomById = async (roomId: string) => {
+    const { data: room, error } = await supabase
+      .from("chat_rooms")
+      .select("id, student_id")
+      .eq("id", roomId)
+      .single();
+
+    if (error) {
+      console.error("Error loading room:", error);
+      return;
+    }
+
+    setCurrentRoom(room);
+    await loadMessages(room.id);
   };
 
   const loadMessages = async (roomId: string) => {
@@ -87,23 +118,25 @@ export const ChatInterface = () => {
       return;
     }
 
+    console.log("Loaded messages:", data);
     setMessages(data || []);
   };
 
   const subscribeToMessages = () => {
-    if (!currentRoom) return;
+    if (!currentRoom?.id) return;
 
     const subscription = supabase
-      .channel(`room:${currentRoom}`)
+      .channel(`room:${currentRoom.id}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'messages',
-          filter: `room_id=eq.${currentRoom}`
+          filter: `room_id=eq.${currentRoom.id}`
         },
         (payload) => {
+          console.log("New message received:", payload.new);
           setMessages(prev => [...prev, payload.new as Message]);
         }
       )
@@ -117,7 +150,7 @@ export const ChatInterface = () => {
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!newMessage.trim() || !currentRoom || !currentUserId) return;
+    if (!newMessage.trim() || !currentRoom?.id || !currentUserId) return;
 
     setLoading(true);
 
@@ -125,7 +158,7 @@ export const ChatInterface = () => {
       const { error } = await supabase
         .from("messages")
         .insert({
-          room_id: currentRoom,
+          room_id: currentRoom.id,
           sender_id: currentUserId,
           content: newMessage.trim(),
           is_anonymous: false,
@@ -142,7 +175,6 @@ export const ChatInterface = () => {
     }
   };
 
-  // Function to determine if message is from current user
   const isMyMessage = (senderId: string) => {
     return senderId === currentUserId;
   };
@@ -150,26 +182,28 @@ export const ChatInterface = () => {
   return (
     <Card className="h-[600px] flex flex-col">
       <CardHeader>
-        <CardTitle>Chat with Student</CardTitle>
+        <CardTitle>
+          {currentRoom ? "Chat with Student" : "Chat"}
+        </CardTitle>
         <CardDescription>
           {currentRoom 
             ? "You're now chatting with a student" 
-            : "Start a chat with a student from the list"}
+            : "Select a student to start chatting"}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex-1 flex flex-col">
         {!currentRoom ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-muted-foreground text-center">
-              Select a student to start chatting
+              No active chat session
               <br />
-              <span className="text-sm">No active chat session</span>
+              <span className="text-sm">Select a student from the list to start chatting</span>
             </p>
           </div>
         ) : (
           <>
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto space-y-3 mb-4 p-2">
+            <div className="flex-1 overflow-y-auto space-y-3 mb-4 p-2 border rounded-lg">
               {messages.length === 0 ? (
                 <p className="text-muted-foreground text-center py-8">
                   No messages yet. Start the conversation!
