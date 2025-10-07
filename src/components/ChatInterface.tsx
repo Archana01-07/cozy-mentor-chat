@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Send, LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { PrivacyToggle } from "./PrivacyToggle";
+import { MentorPrivacyToggle } from "./MentorPrivacyToggle";
 
 interface Message {
   id: string;
@@ -17,6 +18,7 @@ interface Message {
   message: string;
   sender_role: "student" | "mentor";
   student_display_name: string;
+  mentor_display_name?: string;
   created_at: string;
 }
 
@@ -104,13 +106,21 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
   };
 
   const getDisplayName = async () => {
-    if (role === "mentor") return "Mentor";
+    if (role === "mentor") {
+      // @ts-ignore - mentor_preferences table exists but types not regenerated yet
+      const { data: prefs }: any = await supabase.from("mentor_preferences")
+        .select("nickname")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      return prefs?.nickname || "Mentor";
+    }
 
     const { data: prefs } = await supabase
       .from("student_preferences")
       .select("*")
       .eq("user_id", userId)
-      .single();
+      .maybeSingle();
 
     if (!prefs) return "Anonymous";
 
@@ -119,7 +129,7 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
         .from("profiles")
         .select("real_name")
         .eq("id", userId)
-        .single();
+        .maybeSingle();
       return profile?.real_name || "Student";
     }
 
@@ -127,10 +137,13 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
       return prefs.nickname;
     }
 
-    // Get or create anonymous number
+    // Determine student and mentor IDs correctly
+    const studentId = role === "student" ? userId : chatPartnerId;
+    const mentorId = role === "student" ? chatPartnerId : userId;
+    
     const { data: anonData } = await supabase.rpc("get_or_create_anonymous_number", {
-      p_student_id: userId,
-      p_mentor_id: chatPartnerId,
+      p_student_id: studentId,
+      p_mentor_id: mentorId,
     });
 
     return `Anonymous ${anonData}`;
@@ -142,13 +155,16 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
 
     const displayName = await getDisplayName();
 
-    const messageData = {
+    const messageData: any = {
       student_id: role === "student" ? userId : chatPartnerId,
       mentor_id: role === "mentor" ? userId : chatPartnerId,
       message: newMessage.trim(),
       sender_role: role,
-      student_display_name: displayName,
+      student_display_name: role === "student" ? displayName : "Student",
     };
+
+    // Always include mentor_display_name
+    messageData.mentor_display_name = role === "mentor" ? displayName : "Mentor";
 
     const { error } = await supabase.from("chat_messages").insert(messageData);
 
@@ -179,6 +195,7 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
               {role === "student" ? "Talk to a Mentor" : "Mentor Dashboard"}
             </h1>
             {role === "student" && <PrivacyToggle />}
+            {role === "mentor" && <MentorPrivacyToggle />}
           </div>
           <Button variant="outline" onClick={handleLogout}>
             <LogOut className="w-4 h-4 mr-2" />
@@ -206,7 +223,9 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
                 >
                   <Avatar className="w-10 h-10">
                     <AvatarFallback className={isOwn ? "bg-primary text-primary-foreground" : "bg-accent text-accent-foreground"}>
-                      {msg.sender_role === "student" ? msg.student_display_name[0] : "M"}
+                      {msg.sender_role === "student" 
+                        ? msg.student_display_name[0] 
+                        : (msg.mentor_display_name?.[0] || "M")}
                     </AvatarFallback>
                   </Avatar>
                   <Card
@@ -217,7 +236,9 @@ export const ChatInterface = ({ role }: ChatInterfaceProps) => {
                     }`}
                   >
                     <p className="text-sm font-medium mb-1">
-                      {msg.sender_role === "student" ? msg.student_display_name : "Mentor"}
+                      {msg.sender_role === "student" 
+                        ? msg.student_display_name 
+                        : (msg.mentor_display_name || "Mentor")}
                     </p>
                     <p>{msg.message}</p>
                     <p className={`text-xs mt-2 ${isOwn ? "text-primary-foreground/70" : "text-muted-foreground"}`}>

@@ -166,6 +166,10 @@ export type Database = {
         Args: { p_mentor_id: string; p_student_id: string }
         Returns: number
       }
+      get_user_role: {
+        Args: { user_id: string }
+        Returns: Database["public"]["Enums"]["user_role"]
+      }
     }
     Enums: {
       display_mode: "anonymous" | "nickname" | "real_name"
