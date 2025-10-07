@@ -1,258 +1,272 @@
-// components/ChatInterface.tsx
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { toast } from "sonner";
+import { Send, LogOut } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { PrivacyToggle } from "./PrivacyToggle";
+import { MentorPrivacyToggle } from "./MentorPrivacyToggle";
 
 interface Message {
   id: string;
-  content: string;
-  sender_id: string;
-  created_at: string;
-  is_anonymous: boolean;
-}
-
-interface ChatRoom {
-  id: string;
   student_id: string;
+  mentor_id: string;
+  message: string;
+  sender_role: "student" | "mentor";
+  student_display_name: string;
+  mentor_display_name?: string;
+  created_at: string;
 }
 
-export const ChatInterface = () => {
+interface ChatInterfaceProps {
+  role: "student" | "mentor";
+}
+
+export const ChatInterface = ({ role }: ChatInterfaceProps) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
-  const [currentRoom, setCurrentRoom] = useState<ChatRoom | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState<string>("");
+  const [chatPartnerId, setChatPartnerId] = useState<string>("");
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const initializeChat = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUserId(user.id);
-        await loadActiveChatRooms(user.id);
-      }
-    };
-
     initializeChat();
-
-    // Listen for chat room selection from StudentList
-    const handleChatRoomSelected = (event: CustomEvent) => {
-      const roomId = event.detail;
-      loadRoomById(roomId);
-    };
-
-    window.addEventListener('chatRoomSelected', handleChatRoomSelected as EventListener);
-    
-    return () => {
-      window.removeEventListener('chatRoomSelected', handleChatRoomSelected as EventListener);
-    };
   }, []);
 
-  useEffect(() => {
-    if (currentRoom?.id) {
-      const unsubscribe = subscribeToMessages();
-      return () => {
-        if (unsubscribe) unsubscribe();
-      };
-    }
-  }, [currentRoom?.id]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  const loadActiveChatRooms = async (userId: string) => {
-    try {
-      const { data: rooms, error } = await supabase
-        .from("chat_rooms")
-        .select("id, student_id")
-        .eq("mentor_id", userId)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.log("No chat rooms found:", error.message);
-        return;
-      }
-
-      if (rooms && rooms.length > 0) {
-        setCurrentRoom(rooms[0]);
-        await loadMessages(rooms[0].id);
-      }
-    } catch (error) {
-      console.error("Error loading chat rooms:", error);
-    }
-  };
-
-  const loadRoomById = async (roomId: string) => {
-    const { data: room, error } = await supabase
-      .from("chat_rooms")
-      .select("id, student_id")
-      .eq("id", roomId)
-      .single();
-
-    if (error) {
-      console.error("Error loading room:", error);
+  const initializeChat = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      navigate("/");
       return;
     }
 
-    setCurrentRoom(room);
-    await loadMessages(room.id);
+    setUserId(user.id);
+
+    // Get chat partner (first available mentor/student)
+    const partnerRole = role === "student" ? "mentor" : "student";
+    const { data: partners } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("role", partnerRole)
+      .limit(1);
+
+    if (partners && partners.length > 0) {
+      setChatPartnerId(partners[0].id);
+      loadMessages(user.id, partners[0].id);
+      subscribeToMessages(user.id, partners[0].id);
+    } else {
+      toast.error(`No ${partnerRole}s available yet`);
+    }
+
+    setLoading(false);
   };
 
-  const loadMessages = async (roomId: string) => {
-    const { data, error } = await supabase
-      .from("messages")
+  const loadMessages = async (studentId: string, mentorId: string) => {
+    const { data } = await supabase
+      .from("chat_messages")
       .select("*")
-      .eq("room_id", roomId)
+      .or(`student_id.eq.${studentId},student_id.eq.${mentorId}`)
+      .or(`mentor_id.eq.${studentId},mentor_id.eq.${mentorId}`)
       .order("created_at", { ascending: true });
 
-    if (error) {
-      console.error("Error loading messages:", error);
-      return;
-    }
-
-    console.log("Loaded messages:", data);
-    setMessages(data || []);
+    if (data) setMessages(data);
   };
 
-  const subscribeToMessages = () => {
-    if (!currentRoom?.id) return;
-
-    const subscription = supabase
-      .channel(`room:${currentRoom.id}`)
+  const subscribeToMessages = (studentId: string, mentorId: string) => {
+    const channel = supabase
+      .channel("chat-messages")
       .on(
-        'postgres_changes',
+        "postgres_changes",
         {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `room_id=eq.${currentRoom.id}`
+          event: "INSERT",
+          schema: "public",
+          table: "chat_messages",
         },
         (payload) => {
-          console.log("New message received:", payload.new);
-          setMessages(prev => [...prev, payload.new as Message]);
+          const newMsg = payload.new as Message;
+          if (
+            (newMsg.student_id === studentId && newMsg.mentor_id === mentorId) ||
+            (newMsg.student_id === mentorId && newMsg.mentor_id === studentId)
+          ) {
+            setMessages((prev) => [...prev, newMsg]);
+          }
         }
       )
       .subscribe();
 
     return () => {
-      subscription.unsubscribe();
+      supabase.removeChannel(channel);
     };
+  };
+
+  const getDisplayName = async () => {
+    if (role === "mentor") {
+      // @ts-ignore - mentor_preferences table exists but types not regenerated yet
+      const { data: prefs }: any = await supabase.from("mentor_preferences")
+        .select("nickname")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      return prefs?.nickname || "Mentor";
+    }
+
+    const { data: prefs } = await supabase
+      .from("student_preferences")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (!prefs) return "Anonymous";
+
+    if (prefs.display_mode === "real_name") {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("real_name")
+        .eq("id", userId)
+        .maybeSingle();
+      return profile?.real_name || "Student";
+    }
+
+    if (prefs.display_mode === "nickname" && prefs.nickname) {
+      return prefs.nickname;
+    }
+
+    // Determine student and mentor IDs correctly
+    const studentId = role === "student" ? userId : chatPartnerId;
+    const mentorId = role === "student" ? chatPartnerId : userId;
+    
+    const { data: anonData } = await supabase.rpc("get_or_create_anonymous_number", {
+      p_student_id: studentId,
+      p_mentor_id: mentorId,
+    });
+
+    return `Anonymous ${anonData}`;
   };
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!newMessage.trim() || !currentRoom?.id || !currentUserId) return;
+    if (!newMessage.trim() || !chatPartnerId) return;
 
-    setLoading(true);
+    const displayName = await getDisplayName();
 
-    try {
-      const { error } = await supabase
-        .from("messages")
-        .insert({
-          room_id: currentRoom.id,
-          sender_id: currentUserId,
-          content: newMessage.trim(),
-          is_anonymous: false,
-        });
+    const messageData: any = {
+      student_id: role === "student" ? userId : chatPartnerId,
+      mentor_id: role === "mentor" ? userId : chatPartnerId,
+      message: newMessage.trim(),
+      sender_role: role,
+      student_display_name: role === "student" ? displayName : "Student",
+    };
 
-      if (error) throw error;
+    // Always include mentor_display_name
+    messageData.mentor_display_name = role === "mentor" ? displayName : "Mentor";
 
-      setNewMessage("");
-    } catch (error) {
-      console.error("Error sending message:", error);
+    const { error } = await supabase.from("chat_messages").insert(messageData);
+
+    if (error) {
       toast.error("Failed to send message");
-    } finally {
-      setLoading(false);
+      return;
     }
+
+    setNewMessage("");
   };
 
-  const isMyMessage = (senderId: string) => {
-    return senderId === currentUserId;
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    navigate("/");
   };
+
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   return (
-    <Card className="h-[600px] flex flex-col">
-      <CardHeader>
-        <CardTitle>
-          {currentRoom ? "Chat with Student" : "Chat"}
-        </CardTitle>
-        <CardDescription>
-          {currentRoom 
-            ? "You're now chatting with a student" 
-            : "Select a student to start chatting"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex-1 flex flex-col">
-        {!currentRoom ? (
-          <div className="flex-1 flex items-center justify-center">
-            <p className="text-muted-foreground text-center">
-              No active chat session
-              <br />
-              <span className="text-sm">Select a student from the list to start chatting</span>
-            </p>
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-background via-secondary/20 to-accent/10">
+      {/* Header */}
+      <div className="bg-card border-b shadow-sm p-4">
+        <div className="max-w-4xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-bold text-foreground">
+              {role === "student" ? "Talk to a Mentor" : "Mentor Dashboard"}
+            </h1>
+            {role === "student" && <PrivacyToggle />}
+            {role === "mentor" && <MentorPrivacyToggle />}
           </div>
-        ) : (
-          <>
-            {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto space-y-3 mb-4 p-2 border rounded-lg">
-              {messages.length === 0 ? (
-                <p className="text-muted-foreground text-center py-8">
-                  No messages yet. Start the conversation!
-                </p>
-              ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${
-                      isMyMessage(message.sender_id) ? 'justify-end' : 'justify-start'
+          <Button variant="outline" onClick={handleLogout}>
+            <LogOut className="w-4 h-4 mr-2" />
+            Logout
+          </Button>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-hidden">
+        <ScrollArea className="h-[calc(100vh-180px)] max-w-4xl mx-auto p-6">
+          <div className="space-y-4">
+            {messages.length === 0 && !loading && (
+              <div className="text-center text-muted-foreground py-12">
+                <p>No messages yet. Start the conversation!</p>
+              </div>
+            )}
+            
+            {messages.map((msg) => {
+              const isOwn = msg.sender_role === role;
+              return (
+                <div
+                  key={msg.id}
+                  className={`flex gap-3 ${isOwn ? "flex-row-reverse" : ""}`}
+                >
+                  <Avatar className="w-10 h-10">
+                    <AvatarFallback className={isOwn ? "bg-primary text-primary-foreground" : "bg-accent text-accent-foreground"}>
+                      {msg.sender_role === "student" 
+                        ? msg.student_display_name[0] 
+                        : (msg.mentor_display_name?.[0] || "M")}
+                    </AvatarFallback>
+                  </Avatar>
+                  <Card
+                    className={`p-4 max-w-md ${
+                      isOwn
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-card"
                     }`}
                   >
-                    <div
-                      className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                        isMyMessage(message.sender_id)
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted'
-                      }`}
-                    >
-                      <p className="text-sm">{message.content}</p>
-                      <p className={`text-xs mt-1 ${
-                        isMyMessage(message.sender_id)
-                          ? 'text-primary-foreground/70'
-                          : 'text-muted-foreground'
-                      }`}>
-                        {new Date(message.created_at).toLocaleTimeString()}
-                      </p>
-                    </div>
-                  </div>
-                ))
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+                    <p className="text-sm font-medium mb-1">
+                      {msg.sender_role === "student" 
+                        ? msg.student_display_name 
+                        : (msg.mentor_display_name || "Mentor")}
+                    </p>
+                    <p>{msg.message}</p>
+                    <p className={`text-xs mt-2 ${isOwn ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </p>
+                  </Card>
+                </div>
+              );
+            })}
+            <div ref={scrollRef} />
+          </div>
+        </ScrollArea>
+      </div>
 
-            {/* Message Input */}
-            <form onSubmit={sendMessage} className="flex gap-2">
-              <Input
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                placeholder="Type your message..."
-                disabled={loading}
-              />
-              <Button type="submit" disabled={loading || !newMessage.trim()}>
-                Send
-              </Button>
-            </form>
-          </>
-        )}
-      </CardContent>
-    </Card>
+      {/* Input */}
+      <div className="border-t bg-card p-4">
+        <form onSubmit={sendMessage} className="max-w-4xl mx-auto flex gap-2">
+          <Input
+            placeholder="Type your message..."
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            className="flex-1"
+          />
+          <Button type="submit" disabled={!newMessage.trim()}>
+            <Send className="w-4 h-4" />
+          </Button>
+        </form>
+      </div>
+    </div>
   );
 };
