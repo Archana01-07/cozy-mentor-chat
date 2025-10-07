@@ -19,16 +19,28 @@ export const ChatInterface = () => {
   const [newMessage, setNewMessage] = useState("");
   const [currentRoom, setCurrentRoom] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Load active chat room for the mentor
-    loadActiveChatRoom();
+    // Get current user ID and load active chat room
+    const initializeChat = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUserId(user.id);
+        await loadActiveChatRoom(user.id);
+      }
+    };
+
+    initializeChat();
   }, []);
 
   useEffect(() => {
     if (currentRoom) {
-      subscribeToMessages();
+      const unsubscribe = subscribeToMessages();
+      return () => {
+        if (unsubscribe) unsubscribe();
+      };
     }
   }, [currentRoom]);
 
@@ -40,26 +52,27 @@ export const ChatInterface = () => {
     scrollToBottom();
   }, [messages]);
 
-  const loadActiveChatRoom = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+  const loadActiveChatRoom = async (userId: string) => {
+    try {
+      const { data: room, error } = await supabase
+        .from("chat_rooms")
+        .select("id, student_id, created_at")
+        .eq("mentor_id", userId)
+        .eq("status", "active")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
 
-    const { data: room, error } = await supabase
-      .from("chat_rooms")
-      .select("id, student_id, created_at")
-      .eq("mentor_id", user.id)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
+      if (error) {
+        console.log("No active chat room found:", error.message);
+        return;
+      }
 
-    if (error) {
-      console.log("No active chat room found");
-      return;
+      setCurrentRoom(room.id);
+      await loadMessages(room.id);
+    } catch (error) {
+      console.error("Error loading chat room:", error);
     }
-
-    setCurrentRoom(room.id);
-    loadMessages(room.id);
   };
 
   const loadMessages = async (roomId: string) => {
@@ -104,18 +117,16 @@ export const ChatInterface = () => {
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!newMessage.trim() || !currentRoom) return;
+    if (!newMessage.trim() || !currentRoom || !currentUserId) return;
 
     setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
 
     try {
       const { error } = await supabase
         .from("messages")
         .insert({
           room_id: currentRoom,
-          sender_id: user.id,
+          sender_id: currentUserId,
           content: newMessage.trim(),
           is_anonymous: false,
         });
@@ -129,6 +140,11 @@ export const ChatInterface = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Function to determine if message is from current user
+  const isMyMessage = (senderId: string) => {
+    return senderId === currentUserId;
   };
 
   return (
@@ -163,28 +179,19 @@ export const ChatInterface = () => {
                   <div
                     key={message.id}
                     className={`flex ${
-                      message.sender_id === (async () => {
-                        const { data: { user } } = await supabase.auth.getUser();
-                        return user?.id;
-                      })() ? 'justify-end' : 'justify-start'
+                      isMyMessage(message.sender_id) ? 'justify-end' : 'justify-start'
                     }`}
                   >
                     <div
                       className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                        message.sender_id === (async () => {
-                          const { data: { user } } = await supabase.auth.getUser();
-                          return user?.id;
-                        })()
+                        isMyMessage(message.sender_id)
                           ? 'bg-primary text-primary-foreground'
                           : 'bg-muted'
                       }`}
                     >
                       <p className="text-sm">{message.content}</p>
                       <p className={`text-xs mt-1 ${
-                        message.sender_id === (async () => {
-                          const { data: { user } } = await supabase.auth.getUser();
-                          return user?.id;
-                        })()
+                        isMyMessage(message.sender_id)
                           ? 'text-primary-foreground/70'
                           : 'text-muted-foreground'
                       }`}>
