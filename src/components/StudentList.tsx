@@ -1,17 +1,13 @@
-// components/StudentList.tsx
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 
 interface Student {
   id: string;
+  full_name: string | null;
   email: string;
-  user_metadata: {
-    name?: string;
-  };
 }
 
 export const StudentList = () => {
@@ -25,21 +21,48 @@ export const StudentList = () => {
 
   const loadStudents = async () => {
     try {
-      // First, get all users with student role
-      const { data: { users }, error } = await supabase.auth.admin.listUsers();
+      console.log("Loading students from profiles...");
       
+      // Get students from profiles table
+      const { data: profiles, error } = await supabase
+        .from("profiles")
+        .select("id, role, full_name")
+        .eq("role", "student");
+
       if (error) {
-        console.error("Error loading students:", error);
+        console.error("Error loading profiles:", error);
+        toast.error("Failed to load students");
         return;
       }
 
-      // Filter students (you might want to add a role field to your users)
-      const studentUsers = users.filter(user => 
-        user.user_metadata?.role === 'student' || 
-        !user.user_metadata?.role // or all non-mentor users
+      console.log("Profiles found:", profiles);
+
+      if (!profiles || profiles.length === 0) {
+        console.log("No students found in profiles");
+        setStudents([]);
+        return;
+      }
+
+      // Get user details for each student
+      const studentDetails = await Promise.all(
+        profiles.map(async (profile) => {
+          const { data: { user }, error } = await supabase.auth.admin.getUserById(profile.id);
+          if (error) {
+            console.error(`Error getting user ${profile.id}:`, error);
+            return null;
+          }
+          return {
+            id: profile.id,
+            full_name: profile.full_name,
+            email: user?.email || "Unknown email"
+          };
+        })
       );
 
-      setStudents(studentUsers);
+      const validStudents = studentDetails.filter(Boolean) as Student[];
+      console.log("Valid students:", validStudents);
+      setStudents(validStudents);
+      
     } catch (error) {
       console.error("Failed to load students:", error);
       toast.error("Failed to load students");
@@ -51,27 +74,58 @@ export const StudentList = () => {
   const startChat = async (studentId: string) => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        toast.error("You must be logged in");
+        return;
+      }
 
-      // Create a chat room
-      const { data: room, error } = await supabase
+      console.log("Starting chat with student:", studentId);
+
+      // Check if chat room already exists
+      const { data: existingRoom, error: checkError } = await supabase
         .from("chat_rooms")
-        .insert({
-          mentor_id: user.id,
-          student_id: studentId,
-        })
-        .select()
+        .select("id")
+        .eq("mentor_id", user.id)
+        .eq("student_id", studentId)
         .single();
 
-      if (error) throw error;
+      if (checkError && checkError.code !== 'PGRST116') {
+        console.error("Error checking room:", checkError);
+      }
+
+      let roomId;
+
+      if (existingRoom) {
+        roomId = existingRoom.id;
+        toast.success("Resumed existing chat");
+      } else {
+        // Create a new chat room
+        const { data: room, error: createError } = await supabase
+          .from("chat_rooms")
+          .insert({
+            mentor_id: user.id,
+            student_id: studentId,
+          })
+          .select()
+          .single();
+
+        if (createError) {
+          console.error("Error creating room:", createError);
+          throw createError;
+        }
+
+        roomId = room.id;
+        toast.success("Chat started with student!");
+      }
 
       setSelectedStudent(studentId);
-      toast.success("Chat started with student");
       
-      // You might want to trigger a chat interface here
-    } catch (error) {
+      // Trigger chat interface to load this room
+      window.dispatchEvent(new CustomEvent('chatRoomSelected', { detail: roomId }));
+      
+    } catch (error: any) {
       console.error("Error starting chat:", error);
-      toast.error("Failed to start chat");
+      toast.error(error.message || "Failed to start chat");
     }
   };
 
@@ -82,6 +136,12 @@ export const StudentList = () => {
           <CardTitle>Students</CardTitle>
           <CardDescription>Loading students...</CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="animate-pulse">
+            <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+            <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+          </div>
+        </CardContent>
       </Card>
     );
   }
@@ -91,25 +151,35 @@ export const StudentList = () => {
       <CardHeader>
         <CardTitle>Available Students</CardTitle>
         <CardDescription>
-          {students.length} students waiting for help
+          {students.length} student(s) waiting for help
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {students.length === 0 ? (
-          <p className="text-muted-foreground text-center py-4">
-            No students available right now
-          </p>
+          <div className="text-center py-8">
+            <p className="text-muted-foreground">No students found</p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Students will appear here once they register
+            </p>
+            <Button 
+              variant="outline" 
+              className="mt-4"
+              onClick={loadStudents}
+            >
+              Refresh List
+            </Button>
+          </div>
         ) : (
           students.map((student) => (
             <div
               key={student.id}
-              className="flex items-center justify-between p-3 border rounded-lg"
+              className="flex items-center justify-between p-3 border rounded-lg hover:bg-accent/50 transition-colors"
             >
-              <div>
+              <div className="flex-1">
                 <p className="font-medium">
-                  {student.user_metadata?.name || "Student"}
+                  {student.full_name || "Anonymous Student"}
                 </p>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm text-muted-foreground truncate">
                   {student.email}
                 </p>
               </div>
@@ -118,7 +188,7 @@ export const StudentList = () => {
                 onClick={() => startChat(student.id)}
                 variant={selectedStudent === student.id ? "default" : "outline"}
               >
-                {selectedStudent === student.id ? "Chatting" : "Start Chat"}
+                {selectedStudent === student.id ? "Chatting" : "Chat"}
               </Button>
             </div>
           ))
