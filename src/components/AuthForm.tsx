@@ -69,22 +69,43 @@ export const AuthForm = ({ role }: AuthFormProps) => {
           throw new Error("Invalid mentor credentials");
         }
 
-        const { data, error } = await supabase.auth.signInWithPassword({
+        // Try to sign in; if credentials invalid, auto-provision the mentor account
+        const signIn = await supabase.auth.signInWithPassword({
           email: formData.email,
           password: formData.password,
         });
 
-        if (error) throw error;
+        let mentorUserId = signIn.data?.user?.id ?? null;
+
+        if (signIn.error) {
+          const isInvalid = String(signIn.error.message || "").toLowerCase().includes("invalid login credentials");
+          if (!isInvalid) throw signIn.error;
+
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+            email: formData.email,
+            password: formData.password,
+            options: { emailRedirectTo: `${window.location.origin}/mentor/auth` },
+          });
+          if (signUpError) throw signUpError;
+          mentorUserId = signUpData.user?.id ?? mentorUserId;
+        }
+
+        // Ensure we have the current user id
+        if (!mentorUserId) {
+          const { data: me } = await supabase.auth.getUser();
+          mentorUserId = me.user?.id ?? mentorUserId;
+        }
+        if (!mentorUserId) throw new Error("Unable to determine mentor account");
 
         const { data: profile } = await supabase
           .from("profiles")
           .select("*")
-          .eq("id", data.user.id)
+          .eq("id", mentorUserId)
           .maybeSingle();
 
         if (!profile) {
           await supabase.from("profiles").insert({
-            id: data.user.id,
+            id: mentorUserId,
             role: "mentor",
             real_name: "Dr. Hemapriya K",
             email: MENTOR_EMAIL,
@@ -92,7 +113,7 @@ export const AuthForm = ({ role }: AuthFormProps) => {
 
           // @ts-ignore - mentor_preferences table exists but types not regenerated yet
           await supabase.from("mentor_preferences").insert({
-            user_id: data.user.id,
+            user_id: mentorUserId,
             nickname: "Mentor",
           });
         }

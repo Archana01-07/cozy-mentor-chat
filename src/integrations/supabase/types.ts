@@ -57,6 +57,7 @@ export type Database = {
         Row: {
           created_at: string | null
           id: string
+          mentor_display_name: string
           mentor_id: string
           message: string
           sender_role: Database["public"]["Enums"]["user_role"]
@@ -66,6 +67,7 @@ export type Database = {
         Insert: {
           created_at?: string | null
           id?: string
+          mentor_display_name?: string
           mentor_id: string
           message: string
           sender_role: Database["public"]["Enums"]["user_role"]
@@ -75,6 +77,7 @@ export type Database = {
         Update: {
           created_at?: string | null
           id?: string
+          mentor_display_name?: string
           mentor_id?: string
           message?: string
           sender_role?: Database["public"]["Enums"]["user_role"]
@@ -97,6 +100,30 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      mentor_preferences: {
+        Row: {
+          created_at: string
+          id: string
+          nickname: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          nickname: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          nickname?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       profiles: {
         Row: {
@@ -157,6 +184,24 @@ export type Database = {
           },
         ]
       }
+      user_roles: {
+        Row: {
+          id: string
+          role: Database["public"]["Enums"]["user_role"]
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          role: Database["public"]["Enums"]["user_role"]
+          user_id: string
+        }
+        Update: {
+          id?: string
+          role?: Database["public"]["Enums"]["user_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -169,6 +214,13 @@ export type Database = {
       get_user_role: {
         Args: { user_id: string }
         Returns: Database["public"]["Enums"]["user_role"]
+      }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["user_role"]
+          _user_id: string
+        }
+        Returns: boolean
       }
     }
     Enums: {
